@@ -108,17 +108,24 @@ class FuzzyCRegression:
         return coefficients
 
     def _memberships_from_residuals(self, residuals):
-        distances = np.abs(residuals)
-        if not np.all(np.isfinite(distances)):
+        """Return memberships using squared residuals as FCRM distances.
+
+        For positive distances, ``u_ik`` is proportional to
+        ``(d_ik / min_j d_ij)**(-1 / (m - 1))`` with
+        ``d_ik = residual_ik**2``.  Exact zero distances share the membership
+        equally, avoiding divisions by zero while preserving the FCM limit.
+        """
+        squared_distances = np.asarray(residuals, dtype=float) ** 2
+        if not np.all(np.isfinite(squared_distances)):
             raise FloatingPointError("Residuals must be finite to update memberships.")
-        memberships = np.zeros_like(distances)
-        zero = distances <= np.finfo(float).eps
-        for row in range(distances.shape[0]):
+        memberships = np.zeros_like(squared_distances)
+        zero = squared_distances <= np.finfo(float).eps
+        for row in range(squared_distances.shape[0]):
             if np.any(zero[row]):
                 memberships[row, zero[row]] = 1.0 / zero[row].sum()
                 continue
-            scaled = distances[row] / distances[row].min()
-            powers = scaled ** (2.0 / (self.m - 1.0))
+            scaled = squared_distances[row] / squared_distances[row].min()
+            powers = scaled ** (1.0 / (self.m - 1.0))
             memberships[row] = 1.0 / powers
             memberships[row] /= memberships[row].sum()
         return memberships

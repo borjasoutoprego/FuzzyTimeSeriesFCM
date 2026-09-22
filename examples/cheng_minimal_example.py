@@ -5,12 +5,12 @@ import numpy as np
 from _fcm_loader import load_fcm_module
 
 
-series = np.array([10, 11, 12, 13, 25, 26, 27, 28], dtype=float)
-FuzzyTimeSeriesFCM = load_fcm_module().FuzzyTimeSeriesFCM
-model = FuzzyTimeSeriesFCM(n_clusters=2, m=2.0)
-model.fit_fcm(series)
-labels = model.fuzzify()
-rules = model.build_rules()
+def main():
+    series = np.array([10, 11, 12, 13, 25, 26, 27, 28], dtype=float)
+    model = load_fcm_module().FuzzyTimeSeriesFCM(2, m=2.0, random_state=0).fit_fcm(series)
+    print("Fuzzy rules:", model.build_rules())
+    print("One-step Cheng forecast:", model.predict_one_step(series, method="cheng"))
 
-print("Fuzzy rules:", rules)
-print("One-step Cheng forecast:", model.predict_cheng(labels[-1]))
+
+if __name__ == "__main__":
+    main()

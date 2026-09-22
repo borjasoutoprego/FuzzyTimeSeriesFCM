@@ -4,7 +4,7 @@ import skfuzzy as fuzz
 
 class FuzzyInformationGranules:
 
-    def __init__(self, window_size, n_clusters, m=2):
+    def __init__(self, window_size, n_clusters, m=2, random_state=None):
         """
         Parámetros
         ----------
@@ -20,11 +20,27 @@ class FuzzyInformationGranules:
         self.L = window_size
         self.c = n_clusters
         self.m = m
+        self.random_state = random_state
 
         self.granules = None
         self.centers = None
         self.memberships = None
         self.rules = None
+
+    def _validate_parameters(self):
+        if not isinstance(self.L, (int, np.integer)) or self.L < 2:
+            raise ValueError("window_size must be an integer greater than or equal to 2.")
+        if not isinstance(self.c, (int, np.integer)) or self.c < 2:
+            raise ValueError("n_clusters must be an integer greater than or equal to 2.")
+        if not np.isfinite(self.m) or self.m <= 1:
+            raise ValueError("m must be finite and greater than 1.")
+
+    @staticmethod
+    def _validate_series(X, name="X"):
+        values = np.asarray(X, dtype=float)
+        if values.ndim != 1 or not np.all(np.isfinite(values)):
+            raise ValueError(f"{name} must be a one-dimensional series of finite values.")
+        return values
 
     # ---------------------------------------------------------
     # PASO 1: SEGMENTAR LA SERIE
@@ -44,7 +60,7 @@ class FuzzyInformationGranules:
         ...
         """
 
-        X = np.asarray(X, dtype=float)
+        X = self._validate_series(X)
 
         if len(X) <= self.L:
             raise ValueError(
@@ -52,10 +68,7 @@ class FuzzyInformationGranules:
                 "longitud de la ventana."
             )
 
-        windows = np.array([
-            X[i:i + self.L]
-            for i in range(len(X) - self.L + 1)
-        ])
+        windows = np.array([X[i:i + self.L] for i in range(len(X) - self.L)])
 
         return windows
 
@@ -76,6 +89,11 @@ class FuzzyInformationGranules:
         - pendiente de tendencia
         """
 
+        windows = np.asarray(windows, dtype=float)
+        if windows.ndim != 2 or windows.shape[1] != self.L:
+            raise ValueError("windows must have shape (n_windows, window_size).")
+        if not np.all(np.isfinite(windows)):
+            raise ValueError("windows must contain only finite values.")
         features = []
 
         # Posiciones temporales dentro de la ventana
@@ -112,7 +130,10 @@ class FuzzyInformationGranules:
         Entrena el modelo completo sobre la serie X.
         """
 
-        X = np.asarray(X, dtype=float)
+        self._validate_parameters()
+        X = self._validate_series(X)
+        if X.size <= self.L:
+            raise ValueError("The series must contain more values than window_size.")
 
         # Crear ventanas
         windows = self.create_windows(X)
@@ -120,20 +141,27 @@ class FuzzyInformationGranules:
         # Obtener gránulos
         granules = self.extract_features(windows)
 
+        if windows.shape[0] < self.c:
+            raise ValueError("Not enough target-known windows for n_clusters.")
         self.windows = windows
         self.granules = granules
+        self.targets_ = X[self.L:].copy()
 
         # FCM necesita:
         # filas = características
         # columnas = observaciones
         data = granules.T
 
+        seed = None
+        if self.random_state is not None:
+            seed = int(np.random.default_rng(self.random_state).integers(0, 2**31 - 1))
         centers, memberships, _, _, _, _, _ = fuzz.cluster.cmeans(
             data,
             c=self.c,
             m=self.m,
             error=0.005,
-            maxiter=1000
+            maxiter=1000,
+            seed=seed,
         )
 
         self.centers = centers
@@ -142,7 +170,7 @@ class FuzzyInformationGranules:
         # Cluster dominante de cada gránulo
         self.labels = np.argmax(memberships, axis=0)
 
-        # Construir reglas cluster -> futuro
+        # Rules use only target-known windows, never the final inference window.
         self.build_rules(X)
 
         return self
@@ -163,13 +191,13 @@ class FuzzyInformationGranules:
         Cluster i -> valor futuro asociado
         """
 
-        X = np.asarray(X, dtype=float)
+        X = self._validate_series(X)
 
         self.rules = {}
 
         # La última ventana no tiene observación futura
         # conocida dentro de la muestra.
-        n_training_windows = len(self.windows) - 1
+        n_training_windows = len(self.windows)
 
         for cluster in range(self.c):
 
@@ -179,7 +207,7 @@ class FuzzyInformationGranules:
 
                 if self.labels[j] == cluster:
 
-                    future_value = X[j + self.L]
+                    future_value = self.targets_[j]
 
                     future_values.append(future_value)
 
@@ -208,7 +236,9 @@ class FuzzyInformationGranules:
         Predice X(N+1) utilizando los últimos L valores observados.
         """
 
-        X = np.asarray(X, dtype=float)
+        if self.centers is None or self.rules is None:
+            raise RuntimeError("Fit the model before predicting.")
+        X = self._validate_series(X)
 
         if len(X) < self.L:
             raise ValueError(

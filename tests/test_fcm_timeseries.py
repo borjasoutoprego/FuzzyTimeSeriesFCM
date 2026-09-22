@@ -1,25 +1,26 @@
-import contextlib
 import importlib.util
-import io
 from pathlib import Path
 import unittest
 
 import numpy as np
 
 
-def load_fcm_class():
+def load_fcm_module():
     path = Path(__file__).resolve().parents[1] / "fcm-timeseries-continuous-univariant.py"
     spec = importlib.util.spec_from_file_location("fcm_timeseries", path)
     module = importlib.util.module_from_spec(spec)
-    with contextlib.redirect_stdout(io.StringIO()):
-        spec.loader.exec_module(module)
-    return module.FuzzyTimeSeriesFCM
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_fcm_class():
+    return load_fcm_module().FuzzyTimeSeriesFCM
 
 
 class TestFuzzyTimeSeriesFCM(unittest.TestCase):
     def setUp(self):
         self.series = np.array([10, 11, 12, 13, 25, 26, 27, 28], dtype=float)
-        self.model = load_fcm_class()(n_clusters=2, m=2.0)
+        self.model = load_fcm_class()(n_clusters=2, m=2.0, random_state=4)
         self.model.fit_fcm(self.series)
         self.labels = self.model.fuzzify()
 
@@ -42,3 +43,28 @@ class TestFuzzyTimeSeriesFCM(unittest.TestCase):
         self.assertTrue(np.isfinite(prediction))
         self.assertGreaterEqual(prediction, self.model.centers.min())
         self.assertLessEqual(prediction, self.model.centers.max())
+
+    def test_new_fuzzification_does_not_refit(self):
+        centers = self.model.centers.copy()
+        labels, memberships = self.model.fuzzify_new([14.0, 30.0], return_memberships=True)
+        self.assertEqual(labels.shape, (2,))
+        self.assertEqual(memberships.shape, (2, 2))
+        self.assertTrue(np.allclose(memberships.sum(axis=0), 1.0))
+        self.assertTrue(np.allclose(self.model.centers, centers))
+
+    def test_grid_search_is_insensitive_to_test_values(self):
+        train = np.array([1, 2, 3, 10, 11, 12], dtype=float)
+        validation = np.array([13, 14, 15], dtype=float)
+        test_a = np.array([16, 17, 18], dtype=float)
+        test_b = np.array([1e6, -1e6, 1e6], dtype=float)
+        module = load_fcm_module()
+        first = module.grid_search_fcm(train, validation, c_values=(2,), m_values=(2.0,), random_state=3)
+        second = module.grid_search_fcm(train, validation, c_values=(2,), m_values=(2.0,), random_state=3)
+        self.assertEqual(first, second)
+        self.assertFalse(np.array_equal(test_a, test_b))
+
+    def test_validation_first_forecast_uses_last_train_value(self):
+        self.model.build_rules()
+        expected = self.model.predict_cheng(self.model.fuzzify_new([self.series[-1]])[0])
+        actual = self.model.predict_one_step(self.series, method="cheng")
+        self.assertEqual(expected, actual)

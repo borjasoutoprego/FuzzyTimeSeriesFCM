@@ -44,9 +44,11 @@ class TestFuzzyCRegression(unittest.TestCase):
         forecasts = model.predict_by_cluster(x[split:])
         memberships = model.memberships_for(x[split:], y[split:])
         dominant = model.predict(x[split:], memberships, method="dominant")
+        weighted = model.predict(x[split:], memberships, method="weighted")
         self.assertEqual(model.coef_.shape, (2, 3))
         self.assertEqual(forecasts.shape, (x.shape[0] - split, 2))
         self.assertEqual(dominant.shape, (x.shape[0] - split,))
+        self.assertEqual(weighted.shape, (x.shape[0] - split,))
         self.assertTrue(np.isfinite(model.predict_next(series[:130])))
 
     def test_reproducible_with_random_state(self):
@@ -55,3 +57,20 @@ class TestFuzzyCRegression(unittest.TestCase):
         second = FuzzyCRegression(n_clusters=2, n_lags=1, random_state=42).fit(x, y)
         self.assertTrue(np.allclose(first.coef_, second.coef_))
         self.assertTrue(np.allclose(first.memberships_, second.memberships_))
+
+    def test_zero_residual_memberships_are_finite(self):
+        model = FuzzyCRegression(n_clusters=2, n_lags=1)
+        memberships = model._memberships_from_residuals(np.array([[0.0, 2.0], [0.0, 0.0]]))
+        self.assertTrue(np.all(np.isfinite(memberships)))
+        self.assertTrue(np.allclose(memberships.sum(axis=1), 1.0))
+        self.assertTrue(np.allclose(memberships[1], [0.5, 0.5]))
+
+    def test_next_prediction_does_not_use_future_target(self):
+        rng = np.random.default_rng(10)
+        series = rng.normal(size=100)
+        x, y = make_lagged_supervised(series, n_lags=2)
+        model = FuzzyCRegression(2, n_lags=2, random_state=1).fit(x[:60], y[:60])
+        forecast = model.predict_next(series[:65])
+        altered_future = series.copy()
+        altered_future[65:] = 1e9
+        self.assertEqual(forecast, model.predict_next(altered_future[:65]))

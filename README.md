@@ -37,6 +37,21 @@ granules, and FCRM. Run the suite with:
 python -m unittest discover -s tests -v
 ```
 
+## Temporal evaluation
+
+For FCM/Cheng/Egrioglu, fit `FuzzyTimeSeriesFCM` only with the training
+partition. `fuzzify_new` assigns validation or test observations to the fixed
+training centres; it does not refit FCM. `grid_search_fcm(train, validation,
+...)` performs rolling one-step validation and deliberately has no test-data
+argument. After selecting parameters, create a new model fitted on
+train+validation and evaluate test one step at a time.
+
+`FuzzyInformationGranules.fit(train)` uses only windows whose next target is
+inside `train`; `predict(history)` assigns its final observed window to the
+already fitted granular clusters. FCRM likewise exposes `predict_by_cluster`
+and requires supplied memberships for response-dependent combinations, while
+`predict_next(history)` estimates the current regime from observed history.
+
 ## Objetivos
 
 - Preparar y explorar los datos.
