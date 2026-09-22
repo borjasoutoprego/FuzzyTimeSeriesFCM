@@ -8,6 +8,25 @@ El objetivo principal del proyecto es estudiar y aplicar técnicas estadísticas
 
 El proyecto se desarrolla principalmente en Python.
 
+## Fuzzy C-Regression Models (PF.4)
+
+`fcrm_timeseries.py` implements PF.4 as `FuzzyCRegression`. Unlike FCM, which
+uses distances from observations to centroids, FCRM obtains memberships from
+the residual of each cluster-specific regression. Each cluster is therefore an
+estimated dynamic regime. The public attributes after fitting are `coef_`
+(intercept followed by lag coefficients), `memberships_`, `labels_`,
+`residuals_`, `objective_` and `objective_history_`.
+Lag columns are ordered as `lag_n_lags, ..., lag_1`; the same names are
+available in `feature_names_in_`.
+
+Use `make_lagged_supervised(series, n_lags)` to form train/validation/test
+matrices, then fit only the training partition. `predict_by_cluster(X)` returns
+all regression forecasts. For leakage-safe temporal one-step forecasting, use
+`predict_next(history)`: it derives the current regime from already observed
+history and applies it to the next forecast. `predict(X, memberships, method)`
+also supports explicit dominant-regime (`"dominant"`) and weighted (`"weighted"`)
+combinations when memberships are already available.
+
 ## Objetivos
 
 - Preparar y explorar los datos.
