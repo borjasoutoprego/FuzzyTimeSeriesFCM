@@ -27,6 +27,16 @@ history and applies it to the next forecast. `predict(X, memberships, method)`
 also supports explicit dominant-regime (`"dominant"`) and weighted (`"weighted"`)
 combinations when memberships are already available.
 
+## Examples and tests
+
+Each implemented method has a minimal executable example in `examples/` and
+unit tests in `tests/`: FCM, Cheng FTS, Egrioglu FTS-NN, FCM information
+granules, and FCRM. Run the suite with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## Objetivos
 
 - Preparar y explorar los datos.
