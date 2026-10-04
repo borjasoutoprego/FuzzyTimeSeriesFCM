@@ -19,7 +19,7 @@ _GATING_METHODS = ("fuzzy_centers", "multinomial")
 
 
 def make_lagged_supervised(series, n_lags):
-    """Return ``X, y`` in the PDF's newest-to-oldest lag order.
+    """Return supervised lag vectors and their corresponding responses.
 
     For a target ``X_t``, a row of ``X`` is
     ``[X_(t-1), X_(t-2), ..., X_(t-n_lags)]`` and the matching response is
@@ -120,13 +120,12 @@ class FuzzyCRegression:
         return coefficients
 
     def _memberships_from_residuals(self, residuals):
-        """Apply the PDF update; squared residuals give the same formula.
+        """Calculate memberships from each observation's regression residuals.
 
-        The PDF uses ``(|e_tk| / |e_tj|)**(2 / (m - 1))``.  In log space
-        this is a softmax of ``-2 * log(|e_tk|) / (m - 1)``, which is the
-        same update expressed using squared residuals and avoids overflow.
-        Exact zero residuals share all membership equally, as required by the
-        limiting formula.
+        In log space, the residual-based update is a softmax of
+        ``-2 * log(|e_tk|) / (m - 1)``. This avoids overflow when residuals
+        vary greatly in magnitude. Exact zero residuals share membership
+        equally, following the limiting form of the update.
         """
         residuals = np.asarray(residuals, dtype=float)
         if residuals.ndim != 2 or residuals.shape[1] != self.n_clusters:
@@ -221,7 +220,7 @@ class FuzzyCRegression:
         return self
 
     def fit_series(self, series):
-        """Prepare PDF-ordered lags from a univariate series and fit FCRM."""
+        """Create lagged observations from a univariate series and fit FCRM."""
         x, y = make_lagged_supervised(series, self.n_lags)
         return self.fit(x, y)
 
@@ -260,7 +259,7 @@ class FuzzyCRegression:
         )
 
     def fit_gating(self, method="fuzzy_centers", m_g=None):
-        """Fit or construct one of the two PDF gating methods.
+        """Fit or construct a gating model for predicting regime weights.
 
         ``fuzzy_centers`` computes membership-weighted lag centers.  The
         ``multinomial`` option fits a reference-category softmax by minimizing

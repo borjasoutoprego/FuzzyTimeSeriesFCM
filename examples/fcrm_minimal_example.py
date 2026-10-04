@@ -1,4 +1,4 @@
-"""Show FCRM fitting, both PDF gating methods, and both forecasts."""
+"""Show FCRM fitting, both gating methods, and forecasts."""
 
 import sys
 from pathlib import Path
