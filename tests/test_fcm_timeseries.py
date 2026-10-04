@@ -46,7 +46,10 @@ class TestFuzzyTimeSeriesFCM(unittest.TestCase):
 
     def test_new_fuzzification_does_not_refit(self):
         centers = self.model.centers.copy()
-        labels, memberships = self.model.fuzzify_new([14.0, 30.0], return_memberships=True)
+        validation_values = [14.0, 30.0]
+        labels, memberships = self.model.fuzzify_new(
+            validation_values, return_memberships=True
+        )
         self.assertEqual(labels.shape, (2,))
         self.assertEqual(memberships.shape, (2, 2))
         self.assertTrue(np.allclose(memberships.sum(axis=0), 1.0))

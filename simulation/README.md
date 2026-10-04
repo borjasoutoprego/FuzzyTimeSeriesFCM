@@ -25,6 +25,9 @@ the existing Cheng, Egrioglu, FCM-Granular, and FCRM implementations.
 - `statistics.py` summarizes test results within each scenario, ranks
   procedures, runs paired Friedman tests, runs Nemenyi comparisons only after a
   significant Friedman result, and saves scenario-specific boxplots.
+  E3's `FCRM_TRUE`, `FCRM_RV`, and `FCRM` error decomposition is summarized in
+  a separate `fcrm_counterfactual_summary.csv`, outside the core procedure
+  rankings and Friedman/Nemenyi tests.
 
 ## FCRM conventions and diagnostics
 
@@ -34,28 +37,43 @@ instruction that forecasting must use predictor-based gating. Residual-based
 `memberships_` are not used as future prediction weights. Both
 `fuzzy_centers` and `multinomial` are stored as distinct `method_variant`s.
 
-For E3, the JSON result stores the fitted coefficients, residual memberships,
-true regimes, residual-membership ARI, test gating weights, and gating-regime
-ARI. With fixed `c=2`, estimated coefficient rows are matched to the two true
-coefficient vectors by minimum total Euclidean distance. The three PDF error
-decomposition forecasts are also saved for each gate: oracle coefficients and
-regime (`FCRM_TRUE`), estimated coefficients and true regime (`FCRM_RV`), and
-estimated coefficients and dominant gating regime (`FCRM`). For `c>2`, an
-ARI can still be computed label-invariantly, but a one-to-one coefficient
-matching to two true regimes is not defined; exact coefficient matching and
-the error decomposition therefore use the requested fixed `c=2` models.
+For E3, the JSON result stores fitted coefficients, residual memberships,
+true regimes, fit and post-hoc test residual-membership ARI, test gating
+weights, and raw gating ARI. The test membership ARI uses observed responses
+only after test forecasts are complete; it does not affect prediction.
+For fixed `c=2`, estimated coefficient rows are matched to the two true
+coefficient vectors by minimum total Euclidean distance; this mapping is used
+for the coefficient-matched gate labels and the coefficient diagnostic. For
+`c>2`, only the raw gate ARI is a direct comparison; nearest-coefficient regime
+grouping is stored under an explicitly auxiliary field.
 
-For E4, each gate's estimated transition is the total gating weight assigned
-to estimated coefficient vectors closer to the second true dynamic. This is a
-direct two-cluster correspondence for `c=2`; for `c>2`, it aggregates clusters
-by their nearest true coefficient vector. Pearson and Spearman correlations
-with test `G_true`, plus the values and gating weights, are stored.
+The three E3 counterfactual forecasts are saved for each gate: oracle
+coefficients and regime (`FCRM_TRUE`), estimated coefficients and true regime
+(`FCRM_RV`), and estimated coefficients with predictor-based dominant gating
+(`FCRM`). The PDF defines its third decomposition forecast using
+defuzzification of response-residual memberships. The implementation retains
+predictor-based gating for forecasts as separately requested, so that
+decomposition forecast is a known methodological divergence to resolve before
+the full run. Residual memberships do not use test responses for prediction.
+
+For E4, the PDF-defined transition diagnostic uses the fixed `c=2` model. Its
+coefficient rows are matched one-to-one to the true dynamics by minimum total
+Euclidean distance, then test response-residual membership `u_t2` is correlated
+with test `G_true`. The memberships are computed post hoc after forecasts have
+been produced; they are not used in validation, selection, or prediction. For
+`c>2`, a nearest-coefficient membership aggregate is retained only as an
+explicitly labeled auxiliary extension; it is not reported as the PDF-defined
+diagnostic.
 
 The PDF describes defuzzifying FCRM's response-residual memberships for its
-regime ARI and forecast. The request separately requires predictor-based
-gating for forecasts. The implementation preserves both ideas as separate
-diagnostics: fit-membership ARI follows the PDF; actual forecasts and test
-regime diagnostics use the selected gating. `memberships_for()` is not used.
+regime ARI and E3 decomposition forecast. The experiment request requires
+predictor-based gating for forecasts and prohibits using `memberships_for()`
+as a substitute for gating. Therefore all out-of-sample predictions, including
+the E3 `FCRM` decomposition forecast, use the selected gate. `memberships_for()`
+is used only for the explicitly post-hoc E3 regime ARI and E4
+membership-versus-`G_true` diagnostics, after predictions have been recorded.
+This E3 decomposition choice still requires methodological approval before a
+full run.
 
 ## Reproducibility and saved files
 

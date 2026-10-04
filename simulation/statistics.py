@@ -42,6 +42,19 @@ def read_core_metrics(input_dir):
     return records
 
 
+def read_counterfactual_metrics(input_dir):
+    """Read E3 FCRM counterfactual test errors for their separate summary table."""
+    records = []
+    for path in sorted(Path(input_dir).glob("*.json")):
+        with path.open(encoding="utf-8") as handle:
+            result = json.load(handle)
+        for row in result.get("metrics", []):
+            if (row.get("evaluation_split") == "test"
+                    and row.get("result_group") == "counterfactual"):
+                records.append(row)
+    return records
+
+
 def descriptive_summary(records):
     groups = defaultdict(list)
     for row in records:
@@ -262,6 +275,7 @@ def write_boxplots(records, output_dir):
 
 def analyze(input_dir, output_dir, *, make_plots=True, alpha=0.05):
     records = read_core_metrics(input_dir)
+    counterfactual_records = read_counterfactual_metrics(input_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = descriptive_summary(records)
@@ -273,10 +287,14 @@ def analyze(input_dir, output_dir, *, make_plots=True, alpha=0.05):
     write_csv(output_dir / "selection_frequencies.csv", frequencies)
     write_csv(output_dir / "friedman.csv", friedman)
     write_csv(output_dir / "nemenyi_posthoc.csv", nemenyi)
+    counterfactual_summary = descriptive_summary(counterfactual_records)
+    write_csv(output_dir / "fcrm_counterfactual_summary.csv", counterfactual_summary)
     if make_plots:
         write_boxplots(records, output_dir / "figures")
     return {
         "replication_rows": len(records),
+        "counterfactual_rows": len(counterfactual_records),
+        "counterfactual_summary_rows": len(counterfactual_summary),
         "summary_rows": len(summary),
         "rank_rows": len(ranks),
         "selection_frequency_rows": len(frequencies),

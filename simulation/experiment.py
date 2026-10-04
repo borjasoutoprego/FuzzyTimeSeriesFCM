@@ -28,9 +28,9 @@ from .diagnostics import (
     TRUE_REGIME_COEFFICIENTS,
     adjusted_rand,
     correlations,
-    gating_transition_estimate,
     match_two_regime_coefficients,
     nearest_true_regime_by_coefficients,
+    regime_membership_transition_estimate,
 )
 from .dgp import derive_seed, generate_series
 from .evaluation import (
@@ -458,10 +458,11 @@ def _setar_diagnostics(
             if fit_truth.size != model.memberships_.shape[0]:
                 raise RuntimeError("FCRM fitted membership rows do not align with E3 targets.")
             residual_labels = model.labels_
+            test_memberships = model.memberships_for(lag_vectors, test)
+            test_residual_labels = np.argmax(test_memberships, axis=1)
             weights = model.predict_gating_memberships(lag_vectors, method=gate)
             raw_gate_labels = np.argmax(weights, axis=1)
-            mapped_gate_labels = nearest_true_regime_by_coefficients(model.coef_)[0][raw_gate_labels]
-            output["models"][f"{gate}_{label}"] = {
+            model_diagnostics = {
                 "n_clusters": c,
                 "coefficients": model.coef_.tolist(),
                 "fit_memberships": model.memberships_.tolist(),
@@ -471,17 +472,49 @@ def _setar_diagnostics(
                 "test_true_regime": true_test.tolist(),
                 "test_gating_weights": weights.tolist(),
                 "test_estimated_gating_regime_raw": raw_gate_labels.tolist(),
-                "test_estimated_gating_regime_nearest_true_coefficient": mapped_gate_labels.tolist(),
                 "test_gating_ari_raw": adjusted_rand(true_test, raw_gate_labels),
-                "test_gating_ari_mapped": adjusted_rand(true_test, mapped_gate_labels),
             }
             if c == 2:
-                output["models"][f"{gate}_{label}"].update({
-                    "true_coefficients": TRUE_REGIME_COEFFICIENTS.tolist(),
-                    "coefficient_distance_matrix": matching["distance_matrix"].tolist(),
-                    "coefficient_total_distance": matching["total_distance"],
-                    "estimated_cluster_to_true_regime": cluster_to_regime.tolist(),
+                model_matching = match_two_regime_coefficients(model.coef_)
+                cluster_to_model_regime = np.asarray(
+                    model_matching["estimated_cluster_to_true_regime"], dtype=int
+                )
+                matched_gate_labels = cluster_to_model_regime[raw_gate_labels]
+                model_diagnostics.update({
+                    "test_membership_source": "posthoc_test_response_residual_memberships",
+                    "test_memberships": test_memberships.tolist(),
+                    "test_estimated_residual_regime": test_residual_labels.tolist(),
+                    "test_membership_ari": adjusted_rand(true_test, test_residual_labels),
+                    "coefficient_mapping": "one_to_one_minimum_total_euclidean",
+                    "test_estimated_gating_regime_coefficient_matched": matched_gate_labels.tolist(),
+                    "test_gating_ari_coefficient_matched": adjusted_rand(
+                        true_test, matched_gate_labels
+                    ),
                 })
+                model_diagnostics.update({
+                    "true_coefficients": TRUE_REGIME_COEFFICIENTS.tolist(),
+                    "coefficient_distance_matrix": model_matching["distance_matrix"].tolist(),
+                    "coefficient_total_distance": model_matching["total_distance"],
+                    "estimated_cluster_to_true_regime": cluster_to_model_regime.tolist(),
+                })
+            else:
+                auxiliary_mapping, auxiliary_distances = nearest_true_regime_by_coefficients(
+                    model.coef_
+                )
+                auxiliary_gate_labels = auxiliary_mapping[raw_gate_labels]
+                model_diagnostics["auxiliary_c_gt_2_nearest_coefficient_mapping"] = {
+                    "estimated_cluster_to_nearest_true_regime": auxiliary_mapping.tolist(),
+                    "coefficient_distances_to_true_regimes": auxiliary_distances.tolist(),
+                    "test_estimated_regime": auxiliary_gate_labels.tolist(),
+                    "test_ari": adjusted_rand(true_test, auxiliary_gate_labels),
+                }
+                model_diagnostics["auxiliary_c_gt_2_residual_membership_diagnostic"] = {
+                    "membership_source": "posthoc_test_response_residual_memberships",
+                    "test_memberships": test_memberships.tolist(),
+                    "test_estimated_residual_regime": test_residual_labels.tolist(),
+                    "test_ari": adjusted_rand(true_test, test_residual_labels),
+                }
+            output["models"][f"{gate}_{label}"] = model_diagnostics
 
         # Three c=2 counterfactual predictors from the PDF, duplicated by gate
         # label so the two required FCRM variants remain explicitly traceable.
@@ -518,7 +551,7 @@ def _setar_diagnostics(
 
 
 def _lstar_diagnostics(models, selected_by_gate, G_true, train_validation, test, test_start):
-    """Compare gating-derived soft regime-2 weight with true LSTAR G_t."""
+    """Compare PDF-defined response memberships with LSTAR G_t post hoc."""
     if G_true is None:
         raise ValueError("E4 must preserve G_true.")
     lag_vectors = rolling_lag_vectors(train_validation, test, n_lags=2)
@@ -527,18 +560,40 @@ def _lstar_diagnostics(models, selected_by_gate, G_true, train_validation, test,
     for gate in FCRM_GATING_METHODS:
         for label, c in (("c_selected", selected_by_gate[gate]), ("c2", 2)):
             model = models[c]
-            weights = model.predict_gating_memberships(lag_vectors, method=gate)
-            estimated, mapping, distances = gating_transition_estimate(weights, model.coef_)
-            output["models"][f"{gate}_{label}"] = {
-                "n_clusters": c,
-                "coefficients": model.coef_.tolist(),
-                "gating_weights": weights.tolist(),
-                "estimated_cluster_to_nearest_true_regime": mapping.tolist(),
-                "coefficient_distances_to_true_regimes": distances.tolist(),
-                "G_true_test": true_test.tolist(),
-                "G_estimated_test": estimated.tolist(),
-                "correlations": correlations(true_test, estimated),
-            }
+            memberships = model.memberships_for(lag_vectors, test)
+            predictor_weights = model.predict_gating_memberships(lag_vectors, method=gate)
+            estimated, mapping, distances = regime_membership_transition_estimate(
+                memberships, model.coef_
+            )
+            if c == 2:
+                output["models"][f"{gate}_{label}"] = {
+                    "n_clusters": c,
+                    "diagnostic_scope": "pdf_defined_c2",
+                    "membership_source": "posthoc_test_response_residual_memberships",
+                    "coefficient_mapping": "one_to_one_minimum_total_euclidean",
+                    "coefficients": model.coef_.tolist(),
+                    "test_memberships": memberships.tolist(),
+                    "predictor_gating_weights": predictor_weights.tolist(),
+                    "estimated_cluster_to_true_regime": mapping.tolist(),
+                    "coefficient_distance_matrix": distances.tolist(),
+                    "G_true_test": true_test.tolist(),
+                    "G_estimated_test": estimated.tolist(),
+                    "correlations": correlations(true_test, estimated),
+                }
+            else:
+                output["models"][f"{gate}_{label}"] = {
+                    "n_clusters": c,
+                    "diagnostic_scope": "auxiliary_c_gt_2_nearest_coefficient_aggregation",
+                    "membership_source": "posthoc_test_response_residual_memberships",
+                    "coefficients": model.coef_.tolist(),
+                    "test_memberships": memberships.tolist(),
+                    "predictor_gating_weights": predictor_weights.tolist(),
+                    "auxiliary_cluster_to_nearest_true_regime": mapping.tolist(),
+                    "auxiliary_coefficient_distances_to_true_regimes": distances.tolist(),
+                    "G_true_test": true_test.tolist(),
+                    "G_estimated_auxiliary_test": estimated.tolist(),
+                    "auxiliary_correlations": correlations(true_test, estimated),
+                }
     return output
 
 

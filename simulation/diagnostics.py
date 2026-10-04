@@ -49,18 +49,30 @@ def adjusted_rand(true_labels, estimated_labels):
     return float(adjusted_rand_score(truth, estimate))
 
 
-def gating_transition_estimate(gating_weights, estimated_coefficients):
-    """Aggregate gating mass for the estimated dynamics nearest true regime 2."""
-    weights = np.asarray(gating_weights, dtype=float)
-    mapping, distances = nearest_true_regime_by_coefficients(estimated_coefficients)
-    if weights.ndim != 2 or weights.shape[1] != mapping.size:
-        raise ValueError("gating_weights must have one column per coefficient row.")
+def regime_membership_transition_estimate(memberships, estimated_coefficients):
+    """Estimate regime-2 FCRM membership using a c=2 match or c>2 extension.
+
+    For the PDF-defined c=2 diagnostic, coefficient rows are matched one-to-one
+    to the two true dynamics by minimum total Euclidean distance. For c>2, the
+    nearest-dynamics aggregation is an auxiliary extension because the PDF
+    does not define how extra clusters should map to its two regimes.
+    """
+    values = np.asarray(memberships, dtype=float)
+    coefficients = np.asarray(estimated_coefficients, dtype=float)
+    if coefficients.ndim != 2:
+        raise ValueError("estimated_coefficients must be a two-dimensional array.")
+    if coefficients.shape[0] == 2:
+        matching = match_two_regime_coefficients(coefficients)
+        mapping = np.asarray(matching["estimated_cluster_to_true_regime"], dtype=int)
+        distances = matching["distance_matrix"]
+    else:
+        mapping, distances = nearest_true_regime_by_coefficients(coefficients)
+    if values.ndim != 2 or values.shape[1] != mapping.size:
+        raise ValueError("memberships must have one column per coefficient row.")
     second_regime = mapping == 1
     if not np.any(second_regime):
-        # If every estimated dynamic is closest to regime 1, the model assigns
-        # no gating mass to regime 2; the corresponding transition estimate is 0.
-        return np.zeros(weights.shape[0], dtype=float), mapping, distances
-    return np.sum(weights[:, second_regime], axis=1), mapping, distances
+        return np.zeros(values.shape[0], dtype=float), mapping, distances
+    return np.sum(values[:, second_regime], axis=1), mapping, distances
 
 
 def correlations(true_values, estimated_values):

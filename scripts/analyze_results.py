@@ -28,6 +28,7 @@ def main(argv=None):
         alpha=args.alpha,
     )
     print(f"Analyzed {result['replication_rows']} core test rows.")
+    print(f"Summarized {result['counterfactual_rows']} separate FCRM counterfactual test rows.")
     print(f"Summary: {args.output_dir.resolve()}")
 
 

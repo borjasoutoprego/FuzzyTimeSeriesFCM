@@ -266,6 +266,19 @@ class TestFuzzyCRegression(unittest.TestCase):
                 self.assertTrue(np.array_equal(before_weights, after_weights))
                 self.assertEqual(before_prediction, after_prediction)
 
+    def test_future_prediction_does_not_call_response_memberships(self):
+        series = autoregressive_series(size=70)
+        model = FuzzyCRegression(2, n_lags=2, random_state=13).fit_series(series[:60])
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("response-residual memberships cannot generate a forecast")
+
+        model.memberships_for = fail_if_called
+        prediction = model.predict_next(
+            series[:60], gating="fuzzy_centers", method="dominant"
+        )
+        self.assertTrue(np.isfinite(prediction))
+
     def test_predict_weighted_and_dominant_follow_gating_weights(self):
         x = np.array([[0.0], [1.0], [3.0], [4.0]])
         model = FuzzyCRegression(2, n_lags=1, random_state=0, n_init=1).fit(
