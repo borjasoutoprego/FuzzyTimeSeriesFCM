@@ -1,0 +1,13 @@
+# Project documents and reports
+*.pdf
+
+# Python virtual environments
+.venv/
+venv/
+tfm/
+
+# Python bytecode and test/tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/

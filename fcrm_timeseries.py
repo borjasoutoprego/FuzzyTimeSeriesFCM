@@ -1,8 +1,9 @@
 """Fuzzy C-Regression Models (FCRM) for univariate time series.
 
-FCM assigns an observation using its distance to a centroid.  FCRM instead
-assigns it using its squared residual under every regression model.  In this
-module a cluster can therefore be interpreted as an estimated dynamic regime.
+FCRM memberships are calculated from regression residuals.  They are used to
+fit the regime-specific autoregressions and, separately, to train a gating
+model.  Forecasts use gating weights calculated from observed lag vectors; a
+future target is never needed to obtain its weights.
 """
 
 from __future__ import annotations
@@ -10,15 +11,20 @@ from __future__ import annotations
 import warnings
 
 import numpy as np
+from scipy.optimize import minimize
+from scipy.special import logsumexp
+
+
+_GATING_METHODS = ("fuzzy_centers", "multinomial")
 
 
 def make_lagged_supervised(series, n_lags):
-    """Convert a univariate series into lagged regression data.
+    """Return ``X, y`` in the PDF's newest-to-oldest lag order.
 
-    Each row is ordered from the oldest to the most recent lag, so for
-    ``n_lags=2`` the pairs are ``[x_1, x_2] -> x_3``,
-    ``[x_2, x_3] -> x_4``, etc.  Consequently, column ``j`` represents
-    ``lag_(n_lags-j)``.  This ordering is retained in :attr:`coef_`.
+    For a target ``X_t``, a row of ``X`` is
+    ``[X_(t-1), X_(t-2), ..., X_(t-n_lags)]`` and the matching response is
+    ``X_t``.  Thus the first regression coefficient after the intercept is
+    the coefficient of lag 1.
     """
     if not isinstance(n_lags, (int, np.integer)) or n_lags < 1:
         raise ValueError("n_lags must be a positive integer.")
@@ -30,20 +36,20 @@ def make_lagged_supervised(series, n_lags):
     if values.size <= n_lags:
         raise ValueError("series must contain more values than n_lags.")
 
-    x = np.asarray([values[i - n_lags:i] for i in range(n_lags, values.size)])
+    x = np.asarray([
+        [values[t - lag] for lag in range(1, n_lags + 1)]
+        for t in range(n_lags, values.size)
+    ])
     return x, values[n_lags:].copy()
 
 
 class FuzzyCRegression:
-    """Fuzzy C-Regression Model estimated by alternating weighted least squares.
+    """FCRM estimated by alternating weighted least squares.
 
-    The fitted objective is
-
-    ``J = sum_i sum_k u[i, k]**m * (y[i] - x[i] @ phi[k])**2``.
-
-    ``memberships_`` has shape ``(n_observations, n_clusters)``: rows are
-    supervised temporal observations and columns are regression regimes.
-    Cluster numbering is arbitrary and may be permuted between fits.
+    The objective is ``sum_t sum_k u[t, k]**m * residual[t, k]**2``.
+    ``memberships_`` are response-residual memberships used by FCRM.  Gating
+    weights (``omega``) are instead calculated from the lag predictors and are
+    used to forecast without observing the target.
     """
 
     def __init__(self, n_clusters=2, m=2.0, n_lags=2, max_iter=1000,
@@ -88,14 +94,20 @@ class FuzzyCRegression:
         return np.column_stack((np.ones(x.shape[0]), x))
 
     def _fit_coefficients(self, design, y, memberships):
+        """Solve each weighted least-squares problem without regularization."""
         coefficients = np.empty((self.n_clusters, design.shape[1]))
         for cluster in range(self.n_clusters):
             weights = memberships[:, cluster] ** self.m
-            if not np.all(np.isfinite(weights)) or weights.sum() <= np.finfo(float).eps:
-                raise FloatingPointError("A regression cluster has numerically zero total weight.")
-            weighted_design = design * np.sqrt(weights)[:, None]
-            weighted_y = y * np.sqrt(weights)
-            coefficient, _, rank, _ = np.linalg.lstsq(weighted_design, weighted_y, rcond=None)
+            if not np.all(np.isfinite(weights)) or weights.sum() <= 0:
+                raise FloatingPointError(
+                    "A regression cluster has numerically zero total weight."
+                )
+            sqrt_weights = np.sqrt(weights)
+            weighted_design = design * sqrt_weights[:, None]
+            weighted_y = y * sqrt_weights
+            coefficient, _, rank, _ = np.linalg.lstsq(
+                weighted_design, weighted_y, rcond=None
+            )
             if rank < design.shape[1]:
                 warnings.warn(
                     "Weighted least squares is rank deficient; using its minimum-norm solution.",
@@ -108,51 +120,63 @@ class FuzzyCRegression:
         return coefficients
 
     def _memberships_from_residuals(self, residuals):
-        """Return memberships using squared residuals as FCRM distances.
+        """Apply the PDF update; squared residuals give the same formula.
 
-        For positive distances, ``u_ik`` is proportional to
-        ``(d_ik / min_j d_ij)**(-1 / (m - 1))`` with
-        ``d_ik = residual_ik**2``.  Exact zero distances share the membership
-        equally, avoiding divisions by zero while preserving the FCM limit.
+        The PDF uses ``(|e_tk| / |e_tj|)**(2 / (m - 1))``.  In log space
+        this is a softmax of ``-2 * log(|e_tk|) / (m - 1)``, which is the
+        same update expressed using squared residuals and avoids overflow.
+        Exact zero residuals share all membership equally, as required by the
+        limiting formula.
         """
-        squared_distances = np.asarray(residuals, dtype=float) ** 2
-        if not np.all(np.isfinite(squared_distances)):
+        residuals = np.asarray(residuals, dtype=float)
+        if residuals.ndim != 2 or residuals.shape[1] != self.n_clusters:
+            raise ValueError("residuals must have shape (n_observations, n_clusters).")
+        if not np.all(np.isfinite(residuals)):
             raise FloatingPointError("Residuals must be finite to update memberships.")
-        memberships = np.zeros_like(squared_distances)
-        zero = squared_distances <= np.finfo(float).eps
-        for row in range(squared_distances.shape[0]):
-            if np.any(zero[row]):
-                memberships[row, zero[row]] = 1.0 / zero[row].sum()
+
+        memberships = np.zeros_like(residuals)
+        exponent = 2.0 / (self.m - 1.0)
+        for row, errors in enumerate(np.abs(residuals)):
+            exact_zeros = errors == 0.0
+            if np.any(exact_zeros):
+                memberships[row, exact_zeros] = 1.0 / exact_zeros.sum()
                 continue
-            scaled = squared_distances[row] / squared_distances[row].min()
-            powers = scaled ** (1.0 / (self.m - 1.0))
-            memberships[row] = 1.0 / powers
-            memberships[row] /= memberships[row].sum()
+            log_weights = -exponent * np.log(errors)
+            log_weights -= np.max(log_weights)
+            weights = np.exp(log_weights)
+            memberships[row] = weights / weights.sum()
         return memberships
+
+    @staticmethod
+    def _objective(memberships, residuals, m):
+        value = float(np.sum((memberships ** m) * (residuals ** 2)))
+        if not np.isfinite(value):
+            raise FloatingPointError("FCRM objective became non-finite.")
+        return value
 
     def _fit_once(self, x, y, rng):
         design = self._design_matrix(x)
-        memberships = rng.dirichlet(np.ones(self.n_clusters), size=x.shape[0])
+        memberships = rng.random((x.shape[0], self.n_clusters))
+        memberships /= memberships.sum(axis=1, keepdims=True)
         objective_history = []
         converged = False
+
         for iteration in range(1, self.max_iter + 1):
+            # This is one complete alternating step: beta is estimated from
+            # U_old, then residuals, U_new, and the objective are all computed
+            # from that same beta/residual state.
             coefficients = self._fit_coefficients(design, y, memberships)
             residuals = y[:, None] - design @ coefficients.T
             updated = self._memberships_from_residuals(residuals)
-            objective = float(np.sum((updated ** self.m) * residuals ** 2))
-            if not np.isfinite(objective):
-                raise FloatingPointError("FCRM objective became non-finite.")
+            objective = self._objective(updated, residuals, self.m)
             objective_history.append(objective)
-            change = np.max(np.abs(updated - memberships))
+            change = float(np.max(np.abs(updated - memberships)))
             memberships = updated
+
             if change < self.tol:
                 converged = True
                 break
 
-        coefficients = self._fit_coefficients(design, y, memberships)
-        residuals = y[:, None] - design @ coefficients.T
-        memberships = self._memberships_from_residuals(residuals)
-        objective = float(np.sum((memberships ** self.m) * residuals ** 2))
         return {
             "coef": coefficients,
             "residuals": residuals,
@@ -164,40 +188,46 @@ class FuzzyCRegression:
         }
 
     def fit(self, X, y):
-        """Fit FCRM to arbitrary supervised data with exactly ``n_lags`` features.
-
-        ``n_init`` independent membership initializations are evaluated and the
-        solution with the lowest final objective is retained.  This reduces the
-        risk of returning a poor local FCRM solution while retaining fully
-        reproducible results when ``random_state`` is set.
-        """
+        """Fit FCRM to supervised lag vectors and responses."""
         self._validate_parameters()
         x, y = self._validate_xy(X, y)
         rng = np.random.default_rng(self.random_state)
         solutions = [self._fit_once(x, y, rng) for _ in range(self.n_init)]
-        best = min(solutions, key=lambda solution: solution["objective"])
+        self.init_objectives_ = np.asarray(
+            [solution["objective"] for solution in solutions]
+        )
+        best_index = int(np.argmin(self.init_objectives_))
+        best = solutions[best_index]
+
         self.coef_ = best["coef"]
         self.residuals_ = best["residuals"]
         self.memberships_ = best["memberships"]
         self.labels_ = np.argmax(self.memberships_, axis=1)
         self.objective_ = best["objective"]
-        self.objective_history_ = best["objective_history"]
+        self.objective_history_ = np.asarray(best["objective_history"])
         self.converged_ = best["converged"]
         self.n_iter_ = best["n_iter"]
         self.n_features_in_ = x.shape[1]
         self.feature_names_in_ = tuple(
-            f"lag_{lag}" for lag in range(self.n_lags, 0, -1)
+            f"lag_{lag}" for lag in range(1, self.n_lags + 1)
         )
+        self.X_fit_ = x.copy()
+        self.y_fit_ = y.copy()
+        # Gating models are fitted separately and must match this FCRM fit.
+        self._gating_models_ = {}
+        for name in ("gating_centers_", "gating_coef_", "gating_m_", "gating_method_"):
+            if hasattr(self, name):
+                delattr(self, name)
         return self
 
     def fit_series(self, series):
-        """Build lagged data from ``series`` and fit the model."""
+        """Prepare PDF-ordered lags from a univariate series and fit FCRM."""
         x, y = make_lagged_supervised(series, self.n_lags)
         return self.fit(x, y)
 
     def _check_fitted(self):
         if not hasattr(self, "coef_"):
-            raise RuntimeError("Fit the model before requesting predictions.")
+            raise RuntimeError("Fit the FCRM model before requesting predictions.")
 
     def _validate_predict_x(self, X):
         self._check_fitted()
@@ -211,54 +241,153 @@ class FuzzyCRegression:
         return x
 
     def predict_by_cluster(self, X):
-        """Return one forecast per regression, shape ``(n_observations, c)``."""
+        """Return the K regression forecasts, shape ``(n_observations, K)``."""
         x = self._validate_predict_x(X)
         return self._design_matrix(x) @ self.coef_.T
 
     def memberships_for(self, X, y):
-        """Calculate FCRM memberships from observed responses (diagnostic use)."""
+        """Return FCRM residual memberships for observed ``(X, y)`` pairs.
+
+        This response-dependent diagnostic is not used to forecast.  Forecast
+        memberships are obtained with :meth:`predict_gating_memberships`.
+        """
         x = self._validate_predict_x(X)
         y = np.asarray(y, dtype=float)
         if y.ndim != 1 or y.size != x.shape[0] or not np.all(np.isfinite(y)):
             raise ValueError("y must be a finite one-dimensional array matching X.")
-        return self._memberships_from_residuals(y[:, None] - self.predict_by_cluster(x))
+        return self._memberships_from_residuals(
+            y[:, None] - self.predict_by_cluster(x)
+        )
 
-    def predict(self, X, memberships, method="dominant"):
-        """Combine per-cluster forecasts using supplied, already available memberships.
+    def fit_gating(self, method="fuzzy_centers", m_g=None):
+        """Fit or construct one of the two PDF gating methods.
 
-        ``method='dominant'`` implements the PF.4 defuzzification (argmax
-        regime). ``method='weighted'`` is supplied as a separate fuzzy option.
-        Memberships are required because they depend on a response residual and
-        cannot be inferred from future targets without leakage.
+        ``fuzzy_centers`` computes membership-weighted lag centers.  The
+        ``multinomial`` option fits a reference-category softmax by minimizing
+        cross-entropy against the fuzzy FCRM memberships, without hard labels.
         """
-        forecasts = self.predict_by_cluster(X)
-        memberships = np.asarray(memberships, dtype=float)
-        if memberships.shape != forecasts.shape:
-            raise ValueError("memberships must have shape (n_observations, n_clusters).")
-        if not np.all(np.isfinite(memberships)) or np.any(memberships < 0):
-            raise ValueError("memberships must be finite and non-negative.")
-        row_sums = memberships.sum(axis=1)
-        if not np.allclose(row_sums, 1.0, atol=1e-8):
-            raise ValueError("Each membership row must sum to one.")
-        if method == "dominant":
-            return forecasts[np.arange(forecasts.shape[0]), np.argmax(memberships, axis=1)]
+        self._check_fitted()
+        if method not in _GATING_METHODS:
+            raise ValueError("method must be 'fuzzy_centers' or 'multinomial'.")
+        if method == "fuzzy_centers":
+            gating_m = self.m if m_g is None else float(m_g)
+            if not np.isfinite(gating_m) or gating_m <= 1:
+                raise ValueError("m_g must be finite and greater than 1.")
+            weights = self.memberships_ ** self.m
+            totals = weights.sum(axis=0)
+            if np.any(totals <= 0):
+                raise FloatingPointError("A gating center has numerically zero total weight.")
+            centers = (weights.T @ self.X_fit_) / totals[:, None]
+            self.gating_centers_ = centers
+            self.gating_m_ = gating_m
+            self._gating_models_[method] = {
+                "centers": centers.copy(), "m_g": gating_m
+            }
+        else:
+            if m_g is not None:
+                raise ValueError("m_g applies only to gating='fuzzy_centers'.")
+            design = self._design_matrix(self.X_fit_)
+            targets = self.memberships_
+            n_non_reference = self.n_clusters - 1
+            parameter_shape = (n_non_reference, design.shape[1])
+
+            def loss_and_gradient(flat_parameters):
+                coefficients = flat_parameters.reshape(parameter_shape)
+                logits = design @ coefficients.T
+                logits = np.column_stack((logits, np.zeros(design.shape[0])))
+                log_probabilities = logits - logsumexp(
+                    logits, axis=1, keepdims=True
+                )
+                probabilities = np.exp(log_probabilities)
+                loss = -float(np.sum(targets * log_probabilities))
+                gradient = (probabilities[:, :n_non_reference] -
+                            targets[:, :n_non_reference]).T @ design
+                return loss, gradient.ravel()
+
+            result = minimize(
+                loss_and_gradient,
+                np.zeros(int(np.prod(parameter_shape))),
+                method="L-BFGS-B",
+                jac=True,
+                options={"maxiter": 2000, "ftol": 1e-12, "gtol": 1e-8},
+            )
+            if not np.all(np.isfinite(result.x)) or not np.isfinite(result.fun):
+                raise FloatingPointError("Multinomial gating optimization was non-finite.")
+            if not result.success:
+                raise RuntimeError(
+                    f"Multinomial gating optimization failed: {result.message}"
+                )
+            coefficients = result.x.reshape(parameter_shape)
+            self.gating_coef_ = coefficients
+            self._gating_models_[method] = {"coef": coefficients.copy()}
+
+        self.gating_method_ = method
+        return self
+
+    @staticmethod
+    def _fuzzy_distance_memberships(distances, m_g):
+        """Fuzzy c-means membership formula applied to gating distances."""
+        memberships = np.zeros_like(distances, dtype=float)
+        exponent = 2.0 / (m_g - 1.0)
+        for row, row_distances in enumerate(distances):
+            zeros = row_distances == 0.0
+            if np.any(zeros):
+                memberships[row, zeros] = 1.0 / zeros.sum()
+                continue
+            log_weights = -exponent * np.log(row_distances)
+            log_weights -= np.max(log_weights)
+            weights = np.exp(log_weights)
+            memberships[row] = weights / weights.sum()
+        return memberships
+
+    def predict_gating_memberships(self, X, method="fuzzy_centers"):
+        """Return ``omega`` for lag vectors using the selected gating model."""
+        x = self._validate_predict_x(X)
+        if method not in _GATING_METHODS:
+            raise ValueError("method must be 'fuzzy_centers' or 'multinomial'.")
+        if method not in self._gating_models_:
+            self.fit_gating(method)
+        gating_model = self._gating_models_[method]
+
+        if method == "fuzzy_centers":
+            distances = np.linalg.norm(
+                x[:, None, :] - gating_model["centers"][None, :, :], axis=2
+            )
+            return self._fuzzy_distance_memberships(
+                distances, gating_model["m_g"]
+            )
+
+        design = self._design_matrix(x)
+        logits = design @ gating_model["coef"].T
+        logits = np.column_stack((logits, np.zeros(x.shape[0])))
+        log_probabilities = logits - logsumexp(logits, axis=1, keepdims=True)
+        return np.exp(log_probabilities)
+
+    def predict_regime(self, X, gating="fuzzy_centers"):
+        """Return the dominant gating regime for each supplied lag vector."""
+        return np.argmax(self.predict_gating_memberships(X, method=gating), axis=1)
+
+    def predict(self, X, gating="fuzzy_centers", method="weighted"):
+        """Combine cluster forecasts with gating weights.
+
+        ``gating`` selects ``fuzzy_centers`` or ``multinomial`` independently
+        from ``method``, which selects ``weighted`` or ``dominant`` prediction.
+        """
+        if method not in ("weighted", "dominant"):
+            raise ValueError("method must be 'weighted' or 'dominant'.")
+        x = self._validate_predict_x(X)
+        weights = self.predict_gating_memberships(x, method=gating)
+        forecasts = self.predict_by_cluster(x)
         if method == "weighted":
-            return np.sum(memberships * forecasts, axis=1)
-        raise ValueError("method must be 'dominant' or 'weighted'.")
+            return np.sum(weights * forecasts, axis=1)
+        return forecasts[np.arange(forecasts.shape[0]), np.argmax(weights, axis=1)]
 
-    def predict_next(self, history, method="dominant"):
-        """Forecast the next value using only the observed history.
-
-        The final observed value is used to obtain the current residual-based
-        membership; that membership selects or weights the forecast for the
-        next instant.  Thus no future response is used.
-        """
+    def predict_next(self, history, gating="fuzzy_centers", method="weighted"):
+        """Forecast one step using only the latest ``n_lags`` observed values."""
         values = np.asarray(history, dtype=float)
-        if values.ndim != 1 or values.size < self.n_lags + 1:
-            raise ValueError("history must contain at least n_lags + 1 finite values.")
+        if values.ndim != 1 or values.size < self.n_lags:
+            raise ValueError("history must contain at least n_lags finite values.")
         if not np.all(np.isfinite(values)):
             raise ValueError("history must contain only finite values.")
-        current_x = values[-self.n_lags - 1:-1].reshape(1, -1)
-        current_u = self.memberships_for(current_x, values[-1:])
-        next_x = values[-self.n_lags:].reshape(1, -1)
-        return self.predict(next_x, current_u, method=method)[0]
+        lag_vector = values[-1:-self.n_lags - 1:-1].reshape(1, -1)
+        return self.predict(lag_vector, gating=gating, method=method)[0]

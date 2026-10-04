@@ -8,24 +8,55 @@ El objetivo principal del proyecto es estudiar y aplicar técnicas estadísticas
 
 El proyecto se desarrolla principalmente en Python.
 
-## Fuzzy C-Regression Models (PF.4)
+## Fuzzy C-Regression Models (FCRM)
 
-`fcrm_timeseries.py` implements PF.4 as `FuzzyCRegression`. Unlike FCM, which
-uses distances from observations to centroids, FCRM obtains memberships from
-the residual of each cluster-specific regression. Each cluster is therefore an
-estimated dynamic regime. The public attributes after fitting are `coef_`
-(intercept followed by lag coefficients), `memberships_`, `labels_`,
-`residuals_`, `objective_` and `objective_history_`.
-Lag columns are ordered as `lag_n_lags, ..., lag_1`; the same names are
-available in `feature_names_in_`.
+`fcrm_timeseries.py` implements the procedure in `FCRM.pdf` as
+`FuzzyCRegression`. FCRM jointly estimates `K` autoregressive dynamics of order
+`p` and fuzzy memberships for each observed target. For each target `X_t`, the
+regression vector is `[1, X_(t-1), ..., X_(t-p)]`; the cluster-specific
+coefficients are found by weighted least squares with weights `u_tk**m`, with
+no regression regularization.
 
-Use `make_lagged_supervised(series, n_lags)` to form train/validation/test
-matrices, then fit only the training partition. `predict_by_cluster(X)` returns
-all regression forecasts. For leakage-safe temporal one-step forecasting, use
-`predict_next(history)`: it derives the current regime from already observed
-history and applies it to the next forecast. `predict(X, memberships, method)`
-also supports explicit dominant-regime (`"dominant"`) and weighted (`"weighted"`)
-combinations when memberships are already available.
+The FCRM memberships (`memberships_`) are obtained from the absolute regression
+residuals using the update formula in the PDF. They are used to fit the
+regressions and as soft targets for gating. `residuals_` has one row per target
+and one column per dynamic regime. The fitted attributes also include
+`coef_` (intercept followed by lag 1 through lag `p`), `labels_`, `objective_`,
+`objective_history_`, `converged_`, and `n_iter_`. Multiple independent random
+initializations are compared; `random_state` makes them reproducible. Here
+`labels_` is the argmax of the residual-based FCRM memberships; it is separate
+from the dominant regime predicted by gating.
+
+Gating estimates regime weights from observed lag vectors, without needing the
+future target or its residual. `fit_gating("fuzzy_centers")` computes
+membership-weighted lag centers and fuzzy distance memberships.
+`fit_gating("multinomial")` fits a reference-category softmax by minimizing
+cross-entropy against the soft FCRM memberships. Both can be fitted on the same
+FCRM solution. `predict_gating_memberships(X, method=...)` returns these gating
+weights (`omega`), distinct from `memberships_`; `predict_regime(X)` returns the
+dominant gating regime, and `predict_by_cluster(X)` returns all `K` individual
+regression forecasts.
+
+For prediction, `predict(X, gating=..., method=...)` combines the regression
+forecasts with either `method="weighted"` (the sum of each forecast times its
+gating weight) or `method="dominant"` (the forecast from the regime with the
+largest gating weight). The gating choice is independently either
+`"fuzzy_centers"` or `"multinomial"`. `predict_next(history, gating=...,
+method=...)` builds the newest-to-oldest lag vector from the observed history,
+obtains its gating weights, and forecasts the next target. It never calculates
+memberships from a future target residual.
+
+```python
+model.fit_series(train_series)
+model.fit_gating("fuzzy_centers")
+forecast = model.predict_next(
+    history, gating="fuzzy_centers", method="weighted"
+)
+model.fit_gating("multinomial")
+forecast_multinomial = model.predict_next(
+    history, gating="multinomial", method="dominant"
+)
+```
 
 ## Examples and tests
 
@@ -48,9 +79,9 @@ train+validation and evaluate test one step at a time.
 
 `FuzzyInformationGranules.fit(train)` uses only windows whose next target is
 inside `train`; `predict(history)` assigns its final observed window to the
-already fitted granular clusters. FCRM likewise exposes `predict_by_cluster`
-and requires supplied memberships for response-dependent combinations, while
-`predict_next(history)` estimates the current regime from observed history.
+already fitted granular clusters. FCRM keeps residual-based memberships for
+fitting and uses a separate gating model for forecasts, so
+`predict_next(history, gating=..., method=...)` does not need the future target.
 
 ## Objetivos
 
