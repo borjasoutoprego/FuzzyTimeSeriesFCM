@@ -1,0 +1,84 @@
+{
+  "created_at_utc": "2026-10-04T17:17:50.174126+00:00",
+  "master_seed": 20261004,
+  "burn_in": 200,
+  "design": {
+    "DGPs": [
+      "E1",
+      "E2",
+      "E3",
+      "E4"
+    ],
+    "T": [
+      50,
+      100,
+      500
+    ],
+    "sigma_is_standard_deviation": true,
+    "sigma": [
+      0.25,
+      0.5
+    ],
+    "gamma_E4": [
+      1.0,
+      5.0,
+      20.0
+    ],
+    "m": 2.0,
+    "replications_per_scenario": 200,
+    "split": [
+      0.6,
+      0.2,
+      0.2
+    ],
+    "cluster_candidates": [
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "FCRM_gating": [
+      "fuzzy_centers",
+      "multinomial"
+    ]
+  },
+  "environment": {
+    "python": "3.12.6 (tags/v3.12.6:a4a2d2b, Sep  6 2024, 20:11:23) [MSC v.1940 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 142 Stepping 12, GenuineIntel",
+    "cpu_count": 8,
+    "packages": {
+      "numpy": "2.1.1",
+      "scipy": "1.14.1",
+      "scikit-fuzzy": "0.5.0",
+      "scikit-learn": "1.5.2",
+      "pandas": "2.2.3",
+      "statsmodels": "0.14.4"
+    },
+    "git_commit": "892a7c24caa47393c356647efdb97b0234ac53ff"
+  },
+  "runs": [
+    {
+      "started_at_utc": "2026-10-04T17:17:50.174126+00:00",
+      "status": "complete",
+      "selection": [
+        {
+          "dgp": "E3",
+          "T": 50,
+          "sigma": 0.25,
+          "gamma": null
+        }
+      ],
+      "start_replicate": 1,
+      "end_replicate": 1,
+      "n_jobs": 1,
+      "output_dir": "C:\\Users\\name\\Desktop\\MUTE\\TFM\\FuzzyTimeSeriesFCM\\results\\smoke_nonlinear\\E3\\raw",
+      "overwrite": false,
+      "finished_at_utc": "2026-10-04T17:17:55.273741+00:00",
+      "completed_tasks": 1,
+      "elapsed_seconds": 4.9900542999967,
+      "skipped_existing": 0
+    }
+  ]
+}

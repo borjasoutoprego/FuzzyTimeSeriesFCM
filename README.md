@@ -83,6 +83,12 @@ already fitted granular clusters. FCRM keeps residual-based memberships for
 fitting and uses a separate gating model for forecasts, so
 `predict_next(history, gating=..., method=...)` does not need the future target.
 
+## Simulation framework
+
+The E1--E4 design, CLI, resumable replication files, and statistical analysis
+are documented in [simulation/README.md](simulation/README.md). Start with the
+five-replication pilot before launching all 200 replications per scenario.
+
 ## Objetivos
 
 - Preparar y explorar los datos.
