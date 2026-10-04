@@ -160,39 +160,22 @@ class FuzzyCRegression:
         memberships /= memberships.sum(axis=1, keepdims=True)
         objective_history = []
         converged = False
-        coefficients = None
-        residuals = None
 
         for iteration in range(1, self.max_iter + 1):
+            # This is one complete alternating step: beta is estimated from
+            # U_old, then residuals, U_new, and the objective are all computed
+            # from that same beta/residual state.
             coefficients = self._fit_coefficients(design, y, memberships)
             residuals = y[:, None] - design @ coefficients.T
             updated = self._memberships_from_residuals(residuals)
-            objective_history.append(self._objective(updated, residuals, self.m))
+            objective = self._objective(updated, residuals, self.m)
+            objective_history.append(objective)
             change = float(np.max(np.abs(updated - memberships)))
             memberships = updated
 
             if change < self.tol:
-                # Refit against the memberships that will be stored.  Check
-                # the fixed-point change once more after this refit so the
-                # final memberships and coefficients describe the same state.
-                final_coefficients = self._fit_coefficients(
-                    design, y, memberships
-                )
-                final_residuals = y[:, None] - design @ final_coefficients.T
-                refined = self._memberships_from_residuals(final_residuals)
-                if np.max(np.abs(refined - memberships)) < self.tol:
-                    coefficients = final_coefficients
-                    residuals = final_residuals
-                    converged = True
-                    break
-                memberships = refined
-
-        # Ensure beta was estimated using the exact U that is returned, and
-        # residuals/objective are computed from those returned coefficients.
-        coefficients = self._fit_coefficients(design, y, memberships)
-        residuals = y[:, None] - design @ coefficients.T
-        objective = self._objective(memberships, residuals, self.m)
-        objective_history.append(objective)
+                converged = True
+                break
 
         return {
             "coef": coefficients,

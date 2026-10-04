@@ -53,6 +53,7 @@ class TestFuzzyCRegression(unittest.TestCase):
         )
         calculated_objective = np.sum(model.memberships_ ** model.m * calculated_residuals ** 2)
         self.assertAlmostEqual(model.objective_, calculated_objective, places=11)
+        self.assertEqual(model.objective_history_[-1], model.objective_)
         self.assertEqual(model.predict_by_cluster(x[:3]).shape, (3, 2))
 
     def test_objective_history_is_nonincreasing_and_fit_converges(self):
@@ -64,6 +65,15 @@ class TestFuzzyCRegression(unittest.TestCase):
         self.assertTrue(np.all(differences <= 1e-9))
         self.assertTrue(model.converged_)
         self.assertGreater(model.n_iter_, 0)
+        self.assertLessEqual(model.n_iter_, model.max_iter)
+        self.assertEqual(model.objective_history_[-1], model.objective_)
+
+        exhausted = FuzzyCRegression(
+            2, n_lags=1, random_state=3, tol=1e-14, max_iter=1, n_init=1
+        ).fit(x, y)
+        self.assertFalse(exhausted.converged_)
+        self.assertEqual(exhausted.n_iter_, exhausted.max_iter)
+        self.assertEqual(exhausted.objective_history_[-1], exhausted.objective_)
 
     def test_recovers_two_simple_regressions_up_to_permutation(self):
         x, y = two_regime_data()
